@@ -8,14 +8,6 @@ const cors = require('cors');
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
 
-// ===== In-memory lists: filename -> array of row objects =====
-/**
- * For each newly uploaded Excel, we create/overwrite an in-memory list.
- * Keys used:
- *  - saved filename (e.g., 1730834022000_myfile.xlsx)
- *  - original filename as uploaded by the user (e.g., myfile.xlsx)
- *  - safe normalized variants for both (spaces -> _, strip unsafe chars)
- */
 const memoryLists = new Map();
 
 function toSafe(name) {
@@ -55,7 +47,7 @@ const storage = multer.diskStorage({
     cb(null, `${ts}_${safe}`);
   }
 });
-const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB
+const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } });
 
 const app = express();
 app.use(cors());
@@ -89,12 +81,10 @@ function writeJsonToSheet(filePath, headers, rows) {
   XLSX.writeFile(wb, filePath);
 }
 
-// ===== Upload & files =====
 app.post('/api/upload', upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
   try {
-    // Parse immediately and create an in-memory list keyed by file names
     const { rows } = readSheetAsJson(req.file.path);
     putListUnderAllKeys(req.file.originalname, req.file.filename, rows);
 
@@ -166,7 +156,6 @@ app.get('/api/file', (req, res) => {
   res.sendFile(foundPath);
 });
 
-// ===== In-memory lists API =====
 app.get('/api/lists', (req, res) => {
   const data = Array.from(memoryLists.entries()).map(([name, rows]) => ({
     name,
@@ -183,13 +172,11 @@ app.get('/api/list', (req, res) => {
     return res.json({ name, rows: memoryLists.get(name) || [] });
   }
 
-  // Fallback: if not in memory, try disk (helpful after server restarts)
   const filePath = resolveUploadPath(name);
   if (!filePath) return res.status(404).json({ error: 'List not found' });
 
   try {
     const { rows } = readSheetAsJson(filePath);
-    // Populate the in-memory list now
     putListUnderAllKeys(path.basename(filePath), name, rows);
     return res.json({ name, rows });
   } catch (e) {
@@ -198,20 +185,16 @@ app.get('/api/list', (req, res) => {
   }
 });
 
-// ===== CRUD operations on IN-MEMORY LISTS =====
-// GET /api/rows?name=<filename>  -> { headers, rows }
 app.get('/api/rows', (req, res) => {
   const { name } = req.query;
   if (!name) return res.status(400).json({ error: 'Missing list name' });
 
-  // Try to get from memory first
   if (memoryLists.has(name)) {
     const rows = memoryLists.get(name) || [];
     const headers = rows.length > 0 ? Object.keys(rows[0]) : [];
     return res.json({ headers, rows });
   }
 
-  // Fallback: load from disk and populate memory
   const filePath = resolveUploadPath(name);
   if (!filePath) return res.status(404).json({ error: 'List not found' });
 
@@ -225,16 +208,13 @@ app.get('/api/rows', (req, res) => {
   }
 });
 
-// POST /api/rows?name=<filename>  body: { row: { colA: val, ... } }
 app.post('/api/rows', (req, res) => {
   const { name } = req.query;
   const { row } = req.body || {};
   if (!name) return res.status(400).json({ error: 'Missing list name' });
   if (!row || typeof row !== 'object') return res.status(400).json({ error: 'Missing row payload' });
 
-  // Work with in-memory list
   if (!memoryLists.has(name)) {
-    // Try to load from disk first
     const filePath = resolveUploadPath(name);
     if (filePath) {
       try {
@@ -251,7 +231,6 @@ app.post('/api/rows', (req, res) => {
 
   const rows = memoryLists.get(name);
   const headers = rows.length > 0 ? Object.keys(rows[0]) : Object.keys(row);
-  // Ensure all known headers exist in the new row (undefined -> null)
   const normalized = {};
   for (const h of headers) normalized[h] = row[h] ?? null;
   rows.push(normalized);
@@ -259,7 +238,6 @@ app.post('/api/rows', (req, res) => {
   return res.json({ message: 'Row added to list', index: rows.length - 1 });
 });
 
-// PUT /api/rows/:index?name=<filename>  body: { row: { ... } }
 app.put('/api/rows/:index', (req, res) => {
   const { name } = req.query;
   const i = parseInt(req.params.index, 10);
@@ -277,7 +255,6 @@ app.put('/api/rows/:index', (req, res) => {
   const headers = rows.length > 0 ? Object.keys(rows[0]) : [];
   const updated = {};
   for (const h of headers) {
-    // If a column is provided in payload, use it; otherwise keep previous value
     updated[h] = (row && Object.prototype.hasOwnProperty.call(row, h)) ? row[h] : rows[i][h];
   }
   rows[i] = updated;
@@ -285,7 +262,6 @@ app.put('/api/rows/:index', (req, res) => {
   return res.json({ message: 'Row updated in list' });
 });
 
-// DELETE /api/rows/:index?name=<filename>
 app.delete('/api/rows/:index', (req, res) => {
   const { name } = req.query;
   const i = parseInt(req.params.index, 10);
@@ -317,7 +293,6 @@ app.delete("/api/delete/:filename", (req, res) => {
       return res.status(500).json({ error: "Failed to delete file" });
     }
 
-    // drop related in-memory keys
     deleteAllKeysForSaved(filename);
     return res.json({ message: `File ${filename} deleted successfully` });
   });

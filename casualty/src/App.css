@@ -138,3 +138,50 @@
   margin-top: 10px;
 }
 
+.graph-card {
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fafafa;
+}
+
+.graph-legend {
+  margin-top: 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.graph-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.legend-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #3b82f6;
+  color: white;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.legend-labels {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.legend-title {
+  font-weight: 600;
+}
+
+.legend-sub {
+  font-size: 12px;
+  color: #555;
+}
+

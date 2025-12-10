@@ -279,6 +279,60 @@ app.delete('/api/rows/:index', (req, res) => {
   return res.json({ message: 'Row deleted from list' });
 });
 
+// ===== AI graph stub endpoint =====
+// Later you can replace the "callAiModel" function with a real HTTP call
+// to your model endpoint (passing the file or rows as needed).
+const SAMPLE_GRAPH = {
+  nodes: [
+    { feature: 'mr_area', label: 'MR area (cm2)' },
+    { feature: 'la_area', label: 'LA area (cm2)' },
+    { feature: 'la_length', label: 'LA length (cm)' },
+    { feature: 'la_volume', label: 'LA volume (ml)' },
+    { feature: 'mv_tenting_height', label: 'MV tenting height (mm)' },
+    { feature: 'mv_annulus', label: 'MV annulus (mm)' },
+    { feature: 'lv_area', label: 'LV area (cm2)' },
+    { feature: 'lv_length', label: 'LV length (cm)' },
+    { feature: 'lv_volume', label: 'LV volume (ml)' },
+  ],
+  edges: [
+    { source: 'la_area', destination: 'mr_area', weight: 0.42 },
+    { source: 'la_volume', destination: 'mr_area', weight: 0.35 },
+    { source: 'mv_tenting_height', destination: 'mr_area', weight: 0.28 },
+  ],
+};
+
+async function callAiModel({ rows }) {
+  // TODO: swap this stub with a real API call, e.g.:
+  // const resp = await fetch('https://your-ai-endpoint', { ... });
+  // return await resp.json();
+  // For now, return the provided sample so the UI can be wired up.
+  return SAMPLE_GRAPH;
+}
+
+app.post('/api/analyze', async (req, res) => {
+  try {
+    const { name } = req.body || {};
+    if (!name) return res.status(400).json({ error: 'Missing file name to analyze' });
+
+    const filePath = resolveUploadPath(name);
+    if (!filePath) return res.status(404).json({ error: 'File not found' });
+
+    const { rows } = readSheetAsJson(filePath);
+    const graph = await callAiModel({ rows });
+
+    return res.json({
+      graph,
+      meta: {
+        name,
+        rows: rows.length,
+      },
+    });
+  } catch (e) {
+    console.error('AI analyze error', e);
+    return res.status(500).json({ error: 'Failed to get AI analysis' });
+  }
+});
+
 app.delete("/api/delete/:filename", (req, res) => {
   const { filename } = req.params;
   const filePath = path.join(uploadDir, filename);

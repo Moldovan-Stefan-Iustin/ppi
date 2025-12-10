@@ -26,6 +26,9 @@ export default function ExcelUploader() {
   // New: in-memory lists and preview toggle
   const [lists, setLists] = useState([]);            // [{name, count}]
   const [showPreview, setShowPreview] = useState(false); // Toggle between preview and edit mode
+  const [graphData, setGraphData] = useState(null);  // AI graph response
+  const [graphLoading, setGraphLoading] = useState(false);
+  const [graphError, setGraphError] = useState(null);
 
   function getSelectedFilename() {
     return (selectedFile >= 0 && uploadedFiles[selectedFile]) ? uploadedFiles[selectedFile].name : null;
@@ -297,6 +300,121 @@ export default function ExcelUploader() {
     }
   }
 
+  async function analyzeWithAi() {
+    setError(null);
+    setGraphError(null);
+    setSuccessMsg(null);
+    setGraphData(null);
+    const name = getSelectedFilename();
+    if (!name) { setError('No file selected.'); return; }
+    try {
+      setGraphLoading(true);
+      const res = await axios.post('/api/analyze', { name });
+      setGraphData(res.data?.graph || null);
+      setSuccessMsg('AI analysis complete (stub data).');
+    } catch (err) {
+      console.error(err);
+      setGraphError(err?.response?.data?.error || err.message || 'AI analysis failed');
+    } finally {
+      setGraphLoading(false);
+    }
+  }
+
+  function GraphView({ graph }) {
+    if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) return null;
+    const nodes = graph.nodes;
+    const edges = Array.isArray(graph.edges) ? graph.edges : [];
+
+    // simple radial layout
+    const radius = 160;
+    const center = { x: 200, y: 200 };
+    const positions = {};
+    nodes.forEach((n, idx) => {
+      const angle = (idx / nodes.length) * Math.PI * 2;
+      positions[n.feature] = {
+        x: center.x + radius * Math.cos(angle),
+        y: center.y + radius * Math.sin(angle),
+      };
+    });
+
+    return (
+      <div className="graph-card">
+        <h4 style={{ marginTop: 0 }}>AI Graph</h4>
+        <svg width={400} height={400}>
+          {/* edges */}
+          {edges.map((e, idx) => {
+            const from = positions[e.source];
+            const to = positions[e.destination];
+            if (!from || !to) return null;
+            const weight = typeof e.weight === 'number' ? e.weight : 0.2;
+            const strokeWidth = Math.max(1, weight * 5);
+            return (
+              <g key={`edge-${idx}`}>
+                <line
+                  x1={from.x}
+                  y1={from.y}
+                  x2={to.x}
+                  y2={to.y}
+                  stroke="#6b7280"
+                  strokeWidth={strokeWidth}
+                  strokeOpacity="0.8"
+                />
+                <text
+                  x={(from.x + to.x) / 2}
+                  y={(from.y + to.y) / 2}
+                  fill="#374151"
+                  fontSize="10"
+                  textAnchor="middle"
+                >
+                  {weight.toFixed(2)}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* nodes */}
+          {nodes.map((n, idx) => {
+            const pos = positions[n.feature];
+            return (
+              <g key={`node-${idx}`}>
+                <circle
+                  cx={pos.x}
+                  cy={pos.y}
+                  r={18}
+                  fill="#3b82f6"
+                  stroke="#1d4ed8"
+                  strokeWidth="2"
+                />
+                <text
+                  x={pos.x}
+                  y={pos.y}
+                  fill="#ffffff"
+                  fontSize="10"
+                  fontWeight="bold"
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                >
+                  {idx + 1}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
+        <div className="graph-legend">
+          {nodes.map((n, idx) => (
+            <div key={`legend-${idx}`} className="graph-legend-row">
+              <span className="legend-badge">{idx + 1}</span>
+              <div className="legend-labels">
+                <div className="legend-title">{n.label || n.feature}</div>
+                <div className="legend-sub">{n.feature}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   return (
   <div className="excel-uploader">
     <h2>Upload Excel file</h2>
@@ -435,11 +553,22 @@ export default function ExcelUploader() {
       </button>
       <button onClick={getFiles}> Refresh files </button>
       <button onClick={removeFile} disabled={selectedFile < 0}> Remove selected file</button>
+      <button onClick={analyzeWithAi} disabled={selectedFile < 0 || graphLoading}>
+        {graphLoading ? 'Analyzing…' : 'Analyze with AI'}
+      </button>
     </div>
 
     <div>
       {(selectedFile !== -1) ? `Selected File : ${uploadedFiles[selectedFile].name}  from   ${uploadedFiles[selectedFile].uploadedAt}` : ""}
     </div>
+
+    {graphError && <div className="error-msg">{graphError}</div>}
+
+    {graphData && (
+      <div style={{ marginTop: 16 }}>
+        <GraphView graph={graphData} />
+      </div>
+    )}
 
     {uploading && (
       <div className="progress-container">

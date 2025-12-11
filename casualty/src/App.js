@@ -1,6 +1,15 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useCallback } from "react";
 import * as XLSX from "xlsx";
 import axios from "axios";
+import ReactFlow, {
+  ReactFlowProvider,
+  useNodesState,
+  useEdgesState,
+  MarkerType,
+  Background,
+  Controls,
+} from 'reactflow';
+import 'reactflow/dist/style.css';
 import './App.css';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
@@ -322,158 +331,92 @@ export default function ExcelUploader() {
 
   function GraphView({ graph }) {
     if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) return null;
-    const nodes = graph.nodes;
-    const edges = Array.isArray(graph.edges) ? graph.edges : [];
+    
+    const graphNodes = graph.nodes;
+    const graphEdges = Array.isArray(graph.edges) ? graph.edges : [];
 
-    // simple radial layout
-    const radius = 160;
-    const center = { x: 200, y: 200 };
-    const nodeRadius = 18;
-    const positions = {};
-    nodes.forEach((n, idx) => {
-      const angle = (idx / nodes.length) * Math.PI * 2;
-      positions[n.feature] = {
-        x: center.x + radius * Math.cos(angle),
-        y: center.y + radius * Math.sin(angle),
+    // Create a mapping from feature name to index for positioning
+    const featureToIndex = {};
+    graphNodes.forEach((n, idx) => {
+      featureToIndex[n.feature] = idx;
+    });
+
+    // Radial layout for initial positions
+    const radius = 200;
+    const centerX = 250;
+    const centerY = 250;
+
+    // Convert to React Flow nodes
+    const initialNodes = graphNodes.map((n, idx) => {
+      const angle = (idx / graphNodes.length) * Math.PI * 2 - Math.PI / 2;
+      return {
+        id: n.feature,
+        data: { 
+          label: (
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontWeight: 'bold', fontSize: '14px' }}>{idx + 1}</div>
+              <div style={{ fontSize: '9px', opacity: 0.8 }}>{n.label || n.feature}</div>
+            </div>
+          )
+        },
+        position: {
+          x: centerX + radius * Math.cos(angle),
+          y: centerY + radius * Math.sin(angle),
+        },
+        style: {
+          background: '#3b82f6',
+          color: 'white',
+          border: '2px solid #1d4ed8',
+          borderRadius: '50%',
+          width: 70,
+          height: 70,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: '10px',
+          padding: '5px',
+        },
       };
     });
 
-    // Check for bidirectional edges (A->B and B->A both exist)
-    const edgeSet = new Set(edges.map(e => `${e.source}|${e.destination}`));
-    const isBidirectional = (src, dst) => edgeSet.has(`${dst}|${src}`);
-
-    // Calculate curved path for an edge, with offset for bidirectional separation
-    const getEdgePath = (from, to, offset = 0) => {
-      const dx = to.x - from.x;
-      const dy = to.y - from.y;
-      const len = Math.sqrt(dx * dx + dy * dy);
-      if (len === 0) return { path: '', labelX: from.x, labelY: from.y, endX: to.x, endY: to.y };
-
-      // Unit vector along the edge
-      const ux = dx / len;
-      const uy = dy / len;
-
-      // Perpendicular vector for offset
-      const px = -uy;
-      const py = ux;
-
-      // Shorten line to stop at node edge (not center)
-      const startX = from.x + ux * nodeRadius + px * offset;
-      const startY = from.y + uy * nodeRadius + py * offset;
-      const endX = to.x - ux * nodeRadius + px * offset;
-      const endY = to.y - uy * nodeRadius + py * offset;
-
-      // For curved edges (bidirectional), use quadratic bezier
-      if (offset !== 0) {
-        const midX = (startX + endX) / 2 + px * offset * 1.5;
-        const midY = (startY + endY) / 2 + py * offset * 1.5;
-        return {
-          path: `M ${startX} ${startY} Q ${midX} ${midY} ${endX} ${endY}`,
-          labelX: midX,
-          labelY: midY,
-          endX,
-          endY,
-          angle: Math.atan2(endY - midY, endX - midX) * 180 / Math.PI,
-        };
-      }
-
-      // Straight line
+    // Convert to React Flow edges
+    const initialEdges = graphEdges.map((e, idx) => {
+      const weight = typeof e.weight === 'number' ? e.weight : 0.2;
       return {
-        path: `M ${startX} ${startY} L ${endX} ${endY}`,
-        labelX: (startX + endX) / 2,
-        labelY: (startY + endY) / 2,
-        endX,
-        endY,
-        angle: Math.atan2(dy, dx) * 180 / Math.PI,
+        id: `e${idx}-${e.source}-${e.destination}`,
+        source: e.source,
+        target: e.destination,
+        label: weight.toFixed(2),
+        labelStyle: { fontSize: 10, fontWeight: 'bold' },
+        labelBgStyle: { fill: 'white', fillOpacity: 0.8 },
+        labelBgPadding: [4, 2],
+        style: { 
+          stroke: '#6b7280', 
+          strokeWidth: Math.max(1, weight * 3),
+        },
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          color: '#6b7280',
+          width: 20,
+          height: 20,
+        },
+        type: 'default',
       };
-    };
+    });
 
     return (
       <div className="graph-card">
         <h4 style={{ marginTop: 0 }}>AI Graph</h4>
-        <svg width={400} height={400}>
-          {/* Arrow marker definition */}
-          <defs>
-            <marker
-              id="arrowhead"
-              markerWidth="10"
-              markerHeight="7"
-              refX="9"
-              refY="3.5"
-              orient="auto"
-              markerUnits="userSpaceOnUse"
-            >
-              <polygon points="0 0, 10 3.5, 0 7" fill="#6b7280" />
-            </marker>
-          </defs>
-
-          {/* edges */}
-          {edges.map((e, idx) => {
-            const from = positions[e.source];
-            const to = positions[e.destination];
-            if (!from || !to) return null;
-            const weight = typeof e.weight === 'number' ? e.weight : 0.2;
-            const strokeWidth = Math.max(1, weight * 5);
-
-            // Offset bidirectional edges so they don't overlap
-            const bidirectional = isBidirectional(e.source, e.destination);
-            const offset = bidirectional ? 12 : 0;
-
-            const { path, labelX, labelY } = getEdgePath(from, to, offset);
-
-            return (
-              <g key={`edge-${idx}`}>
-                <path
-                  d={path}
-                  stroke="#6b7280"
-                  strokeWidth={strokeWidth}
-                  strokeOpacity="0.8"
-                  fill="none"
-                  markerEnd="url(#arrowhead)"
-                />
-                <text
-                  x={labelX}
-                  y={labelY - 4}
-                  fill="#374151"
-                  fontSize="10"
-                  textAnchor="middle"
-                >
-                  {weight.toFixed(2)}
-                </text>
-              </g>
-            );
-          })}
-
-          {/* nodes */}
-          {nodes.map((n, idx) => {
-            const pos = positions[n.feature];
-            return (
-              <g key={`node-${idx}`}>
-                <circle
-                  cx={pos.x}
-                  cy={pos.y}
-                  r={nodeRadius}
-                  fill="#3b82f6"
-                  stroke="#1d4ed8"
-                  strokeWidth="2"
-                />
-                <text
-                  x={pos.x}
-                  y={pos.y}
-                  fill="#ffffff"
-                  fontSize="10"
-                  fontWeight="bold"
-                  textAnchor="middle"
-                  dominantBaseline="middle"
-                >
-                  {idx + 1}
-                </text>
-              </g>
-            );
-          })}
-        </svg>
+        <p style={{ margin: '0 0 12px 0', fontSize: '13px', color: '#6b7280' }}>
+          Edge values range from 0 to 1. Higher values indicate stronger correlation between features.
+        </p>
+        <div style={{ width: '100%', height: 500, border: '1px solid #ddd', borderRadius: 8 }}>
+          <ReactFlowProvider>
+            <ReactFlowGraph initialNodes={initialNodes} initialEdges={initialEdges} />
+          </ReactFlowProvider>
+        </div>
         <div className="graph-legend">
-          {nodes.map((n, idx) => (
+          {graphNodes.map((n, idx) => (
             <div key={`legend-${idx}`} className="graph-legend-row">
               <span className="legend-badge">{idx + 1}</span>
               <div className="legend-labels">
@@ -484,6 +427,28 @@ export default function ExcelUploader() {
           ))}
         </div>
       </div>
+    );
+  }
+
+  function ReactFlowGraph({ initialNodes, initialEdges }) {
+    const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
+    const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+
+    return (
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        fitView
+        attributionPosition="bottom-left"
+        defaultEdgeOptions={{
+          type: 'default',
+        }}
+      >
+        <Background color="#f0f0f0" gap={16} />
+        <Controls />
+      </ReactFlow>
     );
   }
 

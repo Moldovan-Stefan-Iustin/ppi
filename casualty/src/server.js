@@ -298,6 +298,7 @@ const SAMPLE_GRAPH = {
     { source: 'la_area', destination: 'mr_area', weight: 0.42 },
     { source: 'la_volume', destination: 'mr_area', weight: 0.35 },
     { source: 'mv_tenting_height', destination: 'mr_area', weight: 0.28 },
+    { source: 'mr_area', destination: 'mv_tenting_height', weight: 0.32 },
   ],
 };
 

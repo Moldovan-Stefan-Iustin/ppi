@@ -328,6 +328,7 @@ export default function ExcelUploader() {
     // simple radial layout
     const radius = 160;
     const center = { x: 200, y: 200 };
+    const nodeRadius = 18;
     const positions = {};
     nodes.forEach((n, idx) => {
       const angle = (idx / nodes.length) * Math.PI * 2;
@@ -337,10 +338,75 @@ export default function ExcelUploader() {
       };
     });
 
+    // Check for bidirectional edges (A->B and B->A both exist)
+    const edgeSet = new Set(edges.map(e => `${e.source}|${e.destination}`));
+    const isBidirectional = (src, dst) => edgeSet.has(`${dst}|${src}`);
+
+    // Calculate curved path for an edge, with offset for bidirectional separation
+    const getEdgePath = (from, to, offset = 0) => {
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len === 0) return { path: '', labelX: from.x, labelY: from.y, endX: to.x, endY: to.y };
+
+      // Unit vector along the edge
+      const ux = dx / len;
+      const uy = dy / len;
+
+      // Perpendicular vector for offset
+      const px = -uy;
+      const py = ux;
+
+      // Shorten line to stop at node edge (not center)
+      const startX = from.x + ux * nodeRadius + px * offset;
+      const startY = from.y + uy * nodeRadius + py * offset;
+      const endX = to.x - ux * nodeRadius + px * offset;
+      const endY = to.y - uy * nodeRadius + py * offset;
+
+      // For curved edges (bidirectional), use quadratic bezier
+      if (offset !== 0) {
+        const midX = (startX + endX) / 2 + px * offset * 1.5;
+        const midY = (startY + endY) / 2 + py * offset * 1.5;
+        return {
+          path: `M ${startX} ${startY} Q ${midX} ${midY} ${endX} ${endY}`,
+          labelX: midX,
+          labelY: midY,
+          endX,
+          endY,
+          angle: Math.atan2(endY - midY, endX - midX) * 180 / Math.PI,
+        };
+      }
+
+      // Straight line
+      return {
+        path: `M ${startX} ${startY} L ${endX} ${endY}`,
+        labelX: (startX + endX) / 2,
+        labelY: (startY + endY) / 2,
+        endX,
+        endY,
+        angle: Math.atan2(dy, dx) * 180 / Math.PI,
+      };
+    };
+
     return (
       <div className="graph-card">
         <h4 style={{ marginTop: 0 }}>AI Graph</h4>
         <svg width={400} height={400}>
+          {/* Arrow marker definition */}
+          <defs>
+            <marker
+              id="arrowhead"
+              markerWidth="10"
+              markerHeight="7"
+              refX="9"
+              refY="3.5"
+              orient="auto"
+              markerUnits="userSpaceOnUse"
+            >
+              <polygon points="0 0, 10 3.5, 0 7" fill="#6b7280" />
+            </marker>
+          </defs>
+
           {/* edges */}
           {edges.map((e, idx) => {
             const from = positions[e.source];
@@ -348,20 +414,26 @@ export default function ExcelUploader() {
             if (!from || !to) return null;
             const weight = typeof e.weight === 'number' ? e.weight : 0.2;
             const strokeWidth = Math.max(1, weight * 5);
+
+            // Offset bidirectional edges so they don't overlap
+            const bidirectional = isBidirectional(e.source, e.destination);
+            const offset = bidirectional ? 12 : 0;
+
+            const { path, labelX, labelY } = getEdgePath(from, to, offset);
+
             return (
               <g key={`edge-${idx}`}>
-                <line
-                  x1={from.x}
-                  y1={from.y}
-                  x2={to.x}
-                  y2={to.y}
+                <path
+                  d={path}
                   stroke="#6b7280"
                   strokeWidth={strokeWidth}
                   strokeOpacity="0.8"
+                  fill="none"
+                  markerEnd="url(#arrowhead)"
                 />
                 <text
-                  x={(from.x + to.x) / 2}
-                  y={(from.y + to.y) / 2}
+                  x={labelX}
+                  y={labelY - 4}
                   fill="#374151"
                   fontSize="10"
                   textAnchor="middle"
@@ -380,7 +452,7 @@ export default function ExcelUploader() {
                 <circle
                   cx={pos.x}
                   cy={pos.y}
-                  r={18}
+                  r={nodeRadius}
                   fill="#3b82f6"
                   stroke="#1d4ed8"
                   strokeWidth="2"

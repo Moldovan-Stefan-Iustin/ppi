@@ -315,6 +315,7 @@ async function callAiModel(filePath) {
   }
 
   const data = await response.json();
+  console.log('AI model response:', data);
   return data;
 }
 

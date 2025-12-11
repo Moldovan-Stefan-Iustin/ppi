@@ -279,9 +279,6 @@ app.delete('/api/rows/:index', (req, res) => {
   return res.json({ message: 'Row deleted from list' });
 });
 
-// ===== AI graph stub endpoint =====
-// Later you can replace the "callAiModel" function with a real HTTP call
-// to your model endpoint (passing the file or rows as needed).
 const SAMPLE_GRAPH = {
   nodes: [
     { feature: 'mr_area', label: 'MR area (cm2)' },
@@ -302,12 +299,23 @@ const SAMPLE_GRAPH = {
   ],
 };
 
-async function callAiModel({ rows }) {
-  // TODO: swap this stub with a real API call, e.g.:
-  // const resp = await fetch('https://your-ai-endpoint', { ... });
-  // return await resp.json();
-  // For now, return the provided sample so the UI can be wired up.
-  return SAMPLE_GRAPH;
+async function callAiModel(filePath) {
+  const formData = new FormData();
+  const fileBuffer = fs.readFileSync(filePath);
+  const blob = new Blob([fileBuffer]);
+  formData.append('file', blob, path.basename(filePath));
+
+  const response = await fetch('http://localhost:8080/graph/process', {
+    method: 'POST',
+    body: formData
+  });
+
+  if (!response.ok) {
+    throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  return data;
 }
 
 app.post('/api/analyze', async (req, res) => {
@@ -318,8 +326,9 @@ app.post('/api/analyze', async (req, res) => {
     const filePath = resolveUploadPath(name);
     if (!filePath) return res.status(404).json({ error: 'File not found' });
 
+    const graph = await callAiModel(filePath);
+
     const { rows } = readSheetAsJson(filePath);
-    const graph = await callAiModel({ rows });
 
     return res.json({
       graph,

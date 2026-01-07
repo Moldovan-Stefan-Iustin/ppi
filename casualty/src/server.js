@@ -4,10 +4,12 @@ const path = require('path');
 const fs = require('fs');
 const XLSX = require('xlsx');
 const cors = require('cors');
+const crypto = require('crypto');
 
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
 
+// --- Simple in-memory cache of parsed lists ---
 const memoryLists = new Map();
 
 function toSafe(name) {
@@ -68,6 +70,236 @@ function readSheetAsJson(filePath) {
   const json = XLSX.utils.sheet_to_json(ws, { defval: null, raw: false });
   const headers = json.length ? Object.keys(json[0]) : [];
   return { wb, sheetName, ws, headers, rows: json };
+}
+
+// --- Domain-specific helpers for medical / cardiovascular analysis ---
+
+const MEDICAL_KEYWORDS = [
+  'atrial',
+  'ventricular',
+  'systole',
+  'diastole',
+  'mr',       // mitral regurgitation
+  'mv',       // mitral valve
+  'pml',      // posterior mitral leaflet
+];
+
+function normalizeString(val) {
+  if (val == null) return '';
+  return String(val).toLowerCase();
+}
+
+/**
+ * Inspect headers for medical keywords
+ * and describe simple dependencies around systole / diastole columns.
+ * Also detects name-like columns and returns encrypted samples.
+ */
+function analyzeMedicalData(headers, rows) {
+  const keywordStats = {};
+  const totalRows = rows.length;
+
+  MEDICAL_KEYWORDS.forEach(kw => {
+    keywordStats[kw] = {
+      keyword: kw,
+      inHeaders: [],
+      inColumns: [],
+      hitCount: 0,
+      sampleValues: [],
+    };
+  });
+
+  const systoleHeaders = [];
+  const diastoleHeaders = [];
+  const nameHeaders = [];
+
+  // Scan headers first
+  headers.forEach(h => {
+    const hNorm = normalizeString(h);
+    MEDICAL_KEYWORDS.forEach(kw => {
+      if (hNorm.includes(kw)) {
+        keywordStats[kw].inHeaders.push(h);
+        keywordStats[kw].hitCount += 1;
+      }
+    });
+    if (hNorm.includes('systole') || hNorm.includes('systolic')) systoleHeaders.push(h);
+    if (hNorm.includes('diastole') || hNorm.includes('diastolic')) diastoleHeaders.push(h);
+    if (hNorm.includes('name') || hNorm.includes('patient')) nameHeaders.push(h);
+  });
+
+  // Very lightweight "dependency" description:
+  // For every row that has a systolic or diastolic value,
+  // check what other columns appear alongside and count them.
+  const dependencyCounter = {};
+
+  rows.forEach((row) => {
+    const hasSystole = systoleHeaders.some(h => row[h] != null && row[h] !== '');
+    const hasDiastole = diastoleHeaders.some(h => row[h] != null && row[h] !== '');
+
+    if (!hasSystole && !hasDiastole) return;
+
+    headers.forEach((h) => {
+      if (isNameLikeHeader(h)) return; // never build dependencies on name columns
+      const val = row[h];
+      if (val == null || val === '') return;
+      const key = h;
+      dependencyCounter[key] = (dependencyCounter[key] || 0) + 1;
+    });
+  });
+
+  const phaseDependencies = Object.entries(dependencyCounter)
+    .sort((a, b) => b[1] - a[1])
+    .map(([header, count]) => ({
+      header,
+      coOccurrenceCount: count,
+    }));
+
+  const anyHits = MEDICAL_KEYWORDS.some(kw => keywordStats[kw].hitCount > 0 || keywordStats[kw].inHeaders.length > 0);
+
+  // Encrypt (hash) example values from name-like columns so we don't expose raw identifiers
+  const encryptedNameColumns = nameHeaders.map(h => {
+    const samples = [];
+    for (const row of rows) {
+      if (samples.length >= 5) break;
+      const val = row[h];
+      if (val == null || val === '') continue;
+      const hash = crypto.createHash('sha256').update(String(val)).digest('hex');
+      samples.push(hash);
+    }
+    return {
+      header: h,
+      encryptedSamples: samples,
+    };
+  });
+
+  return {
+    isMedicalLike: anyHits,
+    keywords: keywordStats,
+    systoleHeaders,
+    diastoleHeaders,
+    phaseDependencies,
+    nameColumns: encryptedNameColumns,
+    meta: {
+      totalRows,
+      totalHeaders: headers.length,
+    },
+  };
+}
+
+// ---- Privacy helpers: hide name-like columns from client retrieval ----
+
+function isNameLikeHeader(header) {
+  const h = normalizeString(header);
+  return h.includes('name') || h.includes('patient');
+}
+
+/**
+ * Given full headers/rows, strip any columns that look like names
+ * before returning data to the client.
+ */
+function stripNameColumns(headers, rows) {
+  const filteredHeaders = headers.filter(h => !isNameLikeHeader(h));
+  const filteredRows = rows.map((row) => {
+    const out = {};
+    filteredHeaders.forEach((h) => {
+      out[h] = row[h];
+    });
+    return out;
+  });
+  return { headers: filteredHeaders, rows: filteredRows };
+}
+
+// ---- Privacy helpers: hide name-like columns from client retrieval ----
+
+function isNameLikeHeader(header) {
+  const h = normalizeString(header);
+  return h.includes('name') || h.includes('patient');
+}
+
+/**
+ * Given full headers/rows, strip any columns that look like names
+ * before returning data to the client.
+ */
+function stripNameColumns(headers, rows) {
+  const filteredHeaders = headers.filter(h => !isNameLikeHeader(h));
+  const filteredRows = rows.map((row) => {
+    const out = {};
+    filteredHeaders.forEach((h) => {
+      out[h] = row[h];
+    });
+    return out;
+  });
+  return { headers: filteredHeaders, rows: filteredRows };
+}
+
+// ---- Deeper dependency analysis between numeric columns ----
+
+function toNumberOrNull(val) {
+  if (val === null || val === undefined || val === '') return null;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+}
+
+function pearson(xs, ys) {
+  const n = xs.length;
+  if (n === 0 || ys.length !== n) return null;
+  let sumX = 0, sumY = 0, sumX2 = 0, sumY2 = 0, sumXY = 0;
+  for (let i = 0; i < n; i++) {
+    const x = xs[i];
+    const y = ys[i];
+    sumX += x;
+    sumY += y;
+    sumX2 += x * x;
+    sumY2 += y * y;
+    sumXY += x * y;
+  }
+  const num = n * sumXY - sumX * sumY;
+  const den = Math.sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY));
+  if (!den) return null;
+  return num / den;
+}
+
+function analyzeColumnDependencies(headers, rows) {
+  const numericHeaders = headers.filter(h => !isNameLikeHeader(h));
+  const pairs = [];
+
+  for (let i = 0; i < numericHeaders.length; i++) {
+    for (let j = i + 1; j < numericHeaders.length; j++) {
+      const h1 = numericHeaders[i];
+      const h2 = numericHeaders[j];
+      const xs = [];
+      const ys = [];
+
+      for (const row of rows) {
+        const n1 = toNumberOrNull(row[h1]);
+        const n2 = toNumberOrNull(row[h2]);
+        if (n1 === null || n2 === null) continue;
+        xs.push(n1);
+        ys.push(n2);
+      }
+
+      if (xs.length < 5) continue; // need enough points
+      const r = pearson(xs, ys);
+      if (r === null || Number.isNaN(r)) continue;
+
+      pairs.push({
+        colA: h1,
+        colB: h2,
+        correlation: r,
+        samples: xs.length,
+      });
+    }
+  }
+
+  // Sort by absolute correlation strength, descending
+  pairs.sort((a, b) => Math.abs(b.correlation) - Math.abs(a.correlation));
+
+  return {
+    pairs,
+    meta: {
+      totalPairs: pairs.length,
+      minSamplesPerPair: 5,
+    },
+  };
 }
 
 function writeJsonToSheet(filePath, headers, rows) {
@@ -192,7 +424,8 @@ app.get('/api/rows', (req, res) => {
   if (memoryLists.has(name)) {
     const rows = memoryLists.get(name) || [];
     const headers = rows.length > 0 ? Object.keys(rows[0]) : [];
-    return res.json({ headers, rows });
+    const stripped = stripNameColumns(headers, rows);
+    return res.json(stripped);
   }
 
   const filePath = resolveUploadPath(name);
@@ -201,10 +434,65 @@ app.get('/api/rows', (req, res) => {
   try {
     const { headers, rows } = readSheetAsJson(filePath);
     putListUnderAllKeys(path.basename(filePath), name, rows);
-    return res.json({ headers, rows });
+    const stripped = stripNameColumns(headers, rows);
+    return res.json(stripped);
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: 'Failed to read rows' });
+  }
+});
+
+// --- Analysis endpoint: inspect uploaded sheet for medical patterns ---
+app.post('/api/analyze', (req, res) => {
+  const { name } = req.query;
+  if (!name) return res.status(400).json({ error: 'Missing list/file name' });
+
+  // Prefer in-memory list if present
+  if (memoryLists.has(name)) {
+    const rows = memoryLists.get(name) || [];
+    const headers = rows.length > 0 ? Object.keys(rows[0]) : [];
+    const analysis = analyzeMedicalData(headers, rows);
+    return res.json({ name, source: 'memory', analysis });
+  }
+
+  const filePath = resolveUploadPath(name);
+  if (!filePath) return res.status(404).json({ error: 'List/file not found' });
+
+  try {
+    const { headers, rows } = readSheetAsJson(filePath);
+    putListUnderAllKeys(path.basename(filePath), name, rows);
+    const analysis = analyzeMedicalData(headers, rows);
+    return res.json({ name, source: 'file', analysis });
+  } catch (e) {
+    console.error('Analyze error:', e);
+    return res.status(500).json({ error: 'Failed to analyze data' });
+  }
+});
+
+// --- Numeric dependency endpoint: analyze correlations between columns ---
+app.post('/api/dependencies', (req, res) => {
+  const { name } = req.query;
+  if (!name) return res.status(400).json({ error: 'Missing list/file name' });
+
+  // Prefer in-memory list if present
+  if (memoryLists.has(name)) {
+    const rows = memoryLists.get(name) || [];
+    const headers = rows.length > 0 ? Object.keys(rows[0]) : [];
+    const deps = analyzeColumnDependencies(headers, rows);
+    return res.json({ name, source: 'memory', dependencies: deps });
+  }
+
+  const filePath = resolveUploadPath(name);
+  if (!filePath) return res.status(404).json({ error: 'List/file not found' });
+
+  try {
+    const { headers, rows } = readSheetAsJson(filePath);
+    putListUnderAllKeys(path.basename(filePath), name, rows);
+    const deps = analyzeColumnDependencies(headers, rows);
+    return res.json({ name, source: 'file', dependencies: deps });
+  } catch (e) {
+    console.error('Dependencies analyze error:', e);
+    return res.status(500).json({ error: 'Failed to analyze column dependencies' });
   }
 });
 

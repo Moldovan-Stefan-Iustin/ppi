@@ -2,9 +2,15 @@ import React, { useState, useRef } from "react";
 import * as XLSX from "xlsx";
 import axios from "axios";
 import './App.css';
+import { predictCardiacInteraction, uploadFile, getFiles } from './apiService';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 const ALLOWED_EXT = ['xlsx', 'xls', 'csv'];
+const FEATURE_GROUPS = {
+  "Current Stats": ["LA_area_cm2", "LA_length_cm", "LA_volume_ml", "MV_annulus_mm", "LV_area_cm2", "LV_length_cm", "LV_volume_ml", "RR_interval_msec"],
+  "Lag 1 (Previous)": ["LA_area_cm2_lag1", "LA_length_cm_lag1", "LA_volume_ml_lag1", "MV_annulus_mm_lag1", "LV_area_cm2_lag1", "LV_length_cm_lag1", "LV_volume_ml_lag1", "RR_interval_msec_lag1"],
+  "Lag 2 (Two Steps Ago)": ["LA_area_cm2_lag2", "LA_length_cm_lag2", "LA_volume_ml_lag2", "MV_annulus_mm_lag2", "LV_area_cm2_lag2", "LV_length_cm_lag2", "LV_volume_ml_lag2", "RR_interval_msec_lag2"]
+};
 
 export default function ExcelUploader() {
   const [previewRows, setPreviewRows] = useState(null);
@@ -22,6 +28,12 @@ export default function ExcelUploader() {
   const [newRow, setNewRow] = useState({});          // add-form model
   const [editIndex, setEditIndex] = useState(-1);    // row currently being edited
   const [editRow, setEditRow] = useState({});        // edit-form model
+
+  const [mlFormData, setMlFormData] = useState(
+    Object.values(FEATURE_GROUPS).flat().reduce((acc, curr) => ({ ...acc, [curr]: 0 }), {})
+  );
+  const [mlResult, setMlResult] = useState(null);
+  const [predicting, setPredicting] = useState(false);
 
   // New: in-memory lists and preview toggle
   const [lists, setLists] = useState([]);            // [{name, count}]
@@ -117,6 +129,45 @@ export default function ExcelUploader() {
       return out;
     });
   }
+
+const handleMLPredict = async () => {
+  setPredicting(true);
+  setError(null);
+  try {
+    // Validate that rows exist and are not empty
+    if (!rows || rows.length === 0) {
+      setError("No data available. Please select a file and ensure it has data rows.");
+      return;
+    }
+    
+    // 'rows' is the array of data already loaded from your Node.js backend
+    const response = await axios.post('http://localhost:8000/predict', rows, {
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+    setMlResult(response.data); // This now contains predictions AND importance
+    setError(null);
+  } catch (err) {
+    console.error("Prediction error:", err);
+    const errorMsg = err?.response?.data?.detail || err?.message || "AI Analysis failed. Check if Python is running.";
+    setError(errorMsg);
+  } finally {
+    setPredicting(false);
+  }
+};
+
+  const fillFromRow = (row) => {
+    const updatedForm = { ...mlFormData };
+    Object.keys(row).forEach(key => {
+      const formKey = key.replace(/ /g, '_'); // Convert "LA area cm2" to "LA_area_cm2"
+      if (formKey in updatedForm) {
+        updatedForm[formKey] = parseFloat(row[key]) || 0;
+      }
+    });
+    setMlFormData(updatedForm);
+    setSuccessMsg("AI form populated from selected row.");
+  };
 
   async function handleFile(file, { parse = true } = {}) {
     resetUI();
@@ -619,6 +670,11 @@ export default function ExcelUploader() {
                             )}
                           </td>
                         ))}
+
+                            <td className="row-actions">
+                                <button className="secondary-button small" onClick={() => fillFromRow(r)}>Predict Interaction</button>
+                            </td>
+
                         <td className="row-actions">
                           {editIndex === i ? (
                             <>
@@ -644,6 +700,96 @@ export default function ExcelUploader() {
 
       {/* Analysis panel */}
       <aside className="analysis-panel">
+
+        {/* AI Prediction Section */}
+            <div className="card ml-card" style={{ marginBottom: '16px', borderLeft: '4px solid #3b82f6' }}>
+              <h3>AI Interaction Model</h3>
+              <button 
+                className="primary-button full-width" 
+                onClick={handleMLPredict} 
+                disabled={predicting}
+              >
+                {predicting ? "Computing AI..." : "Run AI Interaction Predictor"}
+              </button>
+
+              {mlResult && (
+                <div className="ml-result-display">
+                  <span className="ml-score-title">Predicted MR Area</span>
+                  <strong className="ml-score-value">
+                    {/* If single prediction, show the number */}
+                    {typeof mlResult.mr_area_cm2[0] === 'number' 
+                      ? mlResult.mr_area_cm2[0].toFixed(3) 
+                      : "0.000"} cm²
+                  </strong>
+                  
+                  {/* Medical context: Severity thresholds for MR Area */}
+                  <div className={`badge ${mlResult.mr_area_cm2[0] > 0.4 ? 'badge-negative' : 'badge-positive'}`} style={{display: 'block', marginTop: '8px'}}>
+                    {mlResult.mr_area_cm2[0] > 0.4 ? "Severe MR Signal" : "Mild/Moderate Signal"}
+                  </div>
+
+                  {/* Feature Importance / Dependencies */}
+                  {mlResult.importance && mlResult.importance.length > 0 && (
+                    <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid #e5e7eb' }}>
+                      <h5 style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: '600', color: '#374151' }}>
+                        Feature Impact (How much each column affects the prediction)
+                      </h5>
+                      <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+                        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                          {mlResult.importance.map((item, idx) => {
+                            // Calculate percentage of total importance
+                            const totalImportance = mlResult.importance.reduce((sum, i) => sum + i.score, 0);
+                            const percentage = totalImportance > 0 ? (item.score / totalImportance * 100).toFixed(1) : 0;
+                            
+                            return (
+                              <li key={idx} style={{ 
+                                padding: '8px 0', 
+                                borderBottom: idx < mlResult.importance.length - 1 ? '1px solid #f3f4f6' : 'none',
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center'
+                              }}>
+                                <div style={{ flex: 1 }}>
+                                  <div style={{ fontSize: '12px', fontWeight: '500', color: '#111827' }}>
+                                    {item.feature.replace(/_/g, ' ')}
+                                  </div>
+                                  <div style={{ 
+                                    width: '100%', 
+                                    height: '4px', 
+                                    backgroundColor: '#e5e7eb', 
+                                    borderRadius: '2px',
+                                    marginTop: '4px',
+                                    overflow: 'hidden'
+                                  }}>
+                                    <div style={{
+                                      width: `${percentage}%`,
+                                      height: '100%',
+                                      backgroundColor: idx < 3 ? '#3b82f6' : '#9ca3af',
+                                      transition: 'width 0.3s ease'
+                                    }} />
+                                  </div>
+                                </div>
+                                <div style={{ 
+                                  marginLeft: '12px', 
+                                  fontSize: '11px', 
+                                  color: '#6b7280',
+                                  minWidth: '60px',
+                                  textAlign: 'right'
+                                }}>
+                                  {item.score.toFixed(2)}
+                                  <br />
+                                  <span style={{ fontSize: '10px' }}>{percentage}%</span>
+                                </div>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
         <div className="card">
           <h3>Cardiovascular analysis</h3>
           <p className="analysis-caption">

@@ -1,10 +1,14 @@
-const express = require('express');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-const XLSX = require('xlsx');
-const cors = require('cors');
-const crypto = require('crypto');
+import express from 'express';
+import cors from 'cors';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
+import crypto from 'crypto';
+import XLSX from 'xlsx';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
@@ -64,12 +68,25 @@ function resolveUploadPath(filename) {
 }
 
 function readSheetAsJson(filePath) {
-  const wb = XLSX.readFile(filePath, { cellDates: false, raw: true });
-  const sheetName = wb.SheetNames[0];
-  const ws = wb.Sheets[sheetName];
-  const json = XLSX.utils.sheet_to_json(ws, { defval: null, raw: false });
-  const headers = json.length ? Object.keys(json[0]) : [];
-  return { wb, sheetName, ws, headers, rows: json };
+  try {
+    // Ensure the file exists before reading
+    if (!fs.existsSync(filePath)) {
+      throw new Error("File path does not exist: " + filePath);
+    }
+
+    const wb = XLSX.readFile(filePath); // This will now work with the fixed import
+    const sheetName = wb.SheetNames[0];
+    const ws = wb.Sheets[sheetName];
+    
+    // Convert to JSON
+    const json = XLSX.utils.sheet_to_json(ws, { defval: null });
+    const headers = json.length ? Object.keys(json[0]) : [];
+    
+    return { headers, rows: json };
+  } catch (error) {
+    console.error("Error inside readSheetAsJson:", error.message);
+    throw error;
+  }
 }
 
 // --- Domain-specific helpers for medical / cardiovascular analysis ---
@@ -183,29 +200,6 @@ function analyzeMedicalData(headers, rows) {
       totalHeaders: headers.length,
     },
   };
-}
-
-// ---- Privacy helpers: hide name-like columns from client retrieval ----
-
-function isNameLikeHeader(header) {
-  const h = normalizeString(header);
-  return h.includes('name') || h.includes('patient');
-}
-
-/**
- * Given full headers/rows, strip any columns that look like names
- * before returning data to the client.
- */
-function stripNameColumns(headers, rows) {
-  const filteredHeaders = headers.filter(h => !isNameLikeHeader(h));
-  const filteredRows = rows.map((row) => {
-    const out = {};
-    filteredHeaders.forEach((h) => {
-      out[h] = row[h];
-    });
-    return out;
-  });
-  return { headers: filteredHeaders, rows: filteredRows };
 }
 
 // ---- Privacy helpers: hide name-like columns from client retrieval ----
@@ -639,5 +633,31 @@ app.delete("/api/delete/:filename", (req, res) => {
     return res.json({ message: `File ${filename} deleted successfully` });
   });
 });
+
+/* Model endpoint */
+
+const API_URL = "http://localhost:8000"; // FastAPI URL
+
+export const predictCardiacInteraction = async (data) => {
+  try {
+    const response = await fetch(`${API_URL}/predict`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(data),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || "Prediction failed");
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error("API Error:", error);
+    throw error;
+  }
+};
 
 app.listen(4000, () => console.log('Server listening on :4000'));

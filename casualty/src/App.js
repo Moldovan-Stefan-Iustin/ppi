@@ -1,15 +1,6 @@
-import React, { useState, useRef, useCallback } from "react";
+import React, { useState, useRef } from "react";
 import * as XLSX from "xlsx";
 import axios from "axios";
-import ReactFlow, {
-  ReactFlowProvider,
-  useNodesState,
-  useEdgesState,
-  MarkerType,
-  Background,
-  Controls,
-} from 'reactflow';
-import 'reactflow/dist/style.css';
 import './App.css';
 import { predictCardiacInteraction, uploadFile, getFiles } from './apiService';
 
@@ -464,92 +455,86 @@ const handleMLPredict = async () => {
 
   function GraphView({ graph }) {
     if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) return null;
-    
-    const graphNodes = graph.nodes;
-    const graphEdges = Array.isArray(graph.edges) ? graph.edges : [];
+    const nodes = graph.nodes;
+    const edges = Array.isArray(graph.edges) ? graph.edges : [];
 
-    // Create a mapping from feature name to index for positioning
-    const featureToIndex = {};
-    graphNodes.forEach((n, idx) => {
-      featureToIndex[n.feature] = idx;
-    });
-
-    // Radial layout for initial positions
-    const radius = 200;
-    const centerX = 250;
-    const centerY = 250;
-
-    // Convert to React Flow nodes
-    const initialNodes = graphNodes.map((n, idx) => {
-      const angle = (idx / graphNodes.length) * Math.PI * 2 - Math.PI / 2;
-      return {
-        id: n.feature,
-        data: { 
-          label: (
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontWeight: 'bold', fontSize: '14px' }}>{idx + 1}</div>
-              <div style={{ fontSize: '9px', opacity: 0.8 }}>{n.label || n.feature}</div>
-            </div>
-          )
-        },
-        position: {
-          x: centerX + radius * Math.cos(angle),
-          y: centerY + radius * Math.sin(angle),
-        },
-        style: {
-          background: '#3b82f6',
-          color: 'white',
-          border: '2px solid #1d4ed8',
-          borderRadius: '50%',
-          width: 70,
-          height: 70,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontSize: '10px',
-          padding: '5px',
-        },
-      };
-    });
-
-    // Convert to React Flow edges
-    const initialEdges = graphEdges.map((e, idx) => {
-      const weight = typeof e.weight === 'number' ? e.weight : 0.2;
-      return {
-        id: `e${idx}-${e.source}-${e.destination}`,
-        source: e.source,
-        target: e.destination,
-        label: weight.toFixed(2),
-        labelStyle: { fontSize: 10, fontWeight: 'bold' },
-        labelBgStyle: { fill: 'white', fillOpacity: 0.8 },
-        labelBgPadding: [4, 2],
-        style: { 
-          stroke: '#6b7280', 
-          strokeWidth: Math.max(1, weight * 3),
-        },
-        markerEnd: {
-          type: MarkerType.ArrowClosed,
-          color: '#6b7280',
-          width: 20,
-          height: 20,
-        },
-        type: 'default',
+    // simple radial layout
+    const radius = 160;
+    const center = { x: 200, y: 200 };
+    const positions = {};
+    nodes.forEach((n, idx) => {
+      const angle = (idx / nodes.length) * Math.PI * 2;
+      positions[n.feature] = {
+        x: center.x + radius * Math.cos(angle),
+        y: center.y + radius * Math.sin(angle),
       };
     });
 
     return (
       <div className="graph-card">
         <h4 style={{ marginTop: 0 }}>AI Graph</h4>
-        <p style={{ margin: '0 0 12px 0', fontSize: '13px', color: '#6b7280' }}>
-          Edge values range from 0 to 1. Higher values indicate stronger correlation between features.
-        </p>
-        <div style={{ width: '100%', height: 500, border: '1px solid #ddd', borderRadius: 8 }}>
-          <ReactFlowProvider>
-            <ReactFlowGraph initialNodes={initialNodes} initialEdges={initialEdges} />
-          </ReactFlowProvider>
-        </div>
+        <svg width={400} height={400}>
+          {/* edges */}
+          {edges.map((e, idx) => {
+            const from = positions[e.source];
+            const to = positions[e.destination];
+            if (!from || !to) return null;
+            const weight = typeof e.weight === 'number' ? e.weight : 0.2;
+            const strokeWidth = Math.max(1, weight * 5);
+            return (
+              <g key={`edge-${idx}`}>
+                <line
+                  x1={from.x}
+                  y1={from.y}
+                  x2={to.x}
+                  y2={to.y}
+                  stroke="#6b7280"
+                  strokeWidth={strokeWidth}
+                  strokeOpacity="0.8"
+                />
+                <text
+                  x={(from.x + to.x) / 2}
+                  y={(from.y + to.y) / 2}
+                  fill="#374151"
+                  fontSize="10"
+                  textAnchor="middle"
+                >
+                  {weight.toFixed(2)}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* nodes */}
+          {nodes.map((n, idx) => {
+            const pos = positions[n.feature];
+            return (
+              <g key={`node-${idx}`}>
+                <circle
+                  cx={pos.x}
+                  cy={pos.y}
+                  r={18}
+                  fill="#3b82f6"
+                  stroke="#1d4ed8"
+                  strokeWidth="2"
+                />
+                <text
+                  x={pos.x}
+                  y={pos.y}
+                  fill="#ffffff"
+                  fontSize="10"
+                  fontWeight="bold"
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                >
+                  {idx + 1}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
         <div className="graph-legend">
-          {graphNodes.map((n, idx) => (
+          {nodes.map((n, idx) => (
             <div key={`legend-${idx}`} className="graph-legend-row">
               <span className="legend-badge">{idx + 1}</span>
               <div className="legend-labels">
@@ -560,28 +545,6 @@ const handleMLPredict = async () => {
           ))}
         </div>
       </div>
-    );
-  }
-
-  function ReactFlowGraph({ initialNodes, initialEdges }) {
-    const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-    const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
-
-    return (
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        fitView
-        attributionPosition="bottom-left"
-        defaultEdgeOptions={{
-          type: 'default',
-        }}
-      >
-        <Background color="#f0f0f0" gap={16} />
-        <Controls />
-      </ReactFlow>
     );
   }
 

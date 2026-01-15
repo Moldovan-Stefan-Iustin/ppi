@@ -1,6 +1,15 @@
 import React, { useState, useRef } from "react";
 import * as XLSX from "xlsx";
 import axios from "axios";
+import ReactFlow, {
+  ReactFlowProvider,
+  useNodesState,
+  useEdgesState,
+  MarkerType,
+  Background,
+  Controls,
+} from 'reactflow';
+import 'reactflow/dist/style.css';
 import './App.css';
 import { predictCardiacInteraction, uploadFile, getFiles } from './apiService';
 
@@ -49,6 +58,11 @@ export default function ExcelUploader() {
   const [dependencies, setDependencies] = useState(null);
   const [depsLoading, setDepsLoading] = useState(false);
   const [depsError, setDepsError] = useState(null);
+
+  // Causality Graph from Java backend
+  const [causalityGraph, setCausalityGraph] = useState(null);
+  const [causalityLoading, setCausalityLoading] = useState(false);
+  const [causalityError, setCausalityError] = useState(null);
 
   function isNameLikeHeader(header) {
     if (!header) return false;
@@ -451,6 +465,279 @@ const handleMLPredict = async () => {
     } finally {
       setGraphLoading(false);
     }
+  }
+
+  // Call Java backend for causality graph
+  async function runCausalityAnalysis() {
+    setCausalityError(null);
+    setCausalityGraph(null);
+    
+    if (selectedFile < 0 || !uploadedFiles[selectedFile]) {
+      setCausalityError('No file selected.');
+      return;
+    }
+
+    try {
+      setCausalityLoading(true);
+      
+      // Fetch the file from Node backend and send to Java backend
+      const name = uploadedFiles[selectedFile].name;
+      const fileRes = await axios.get(`/api/file?name=${encodeURIComponent(name)}`, {
+        responseType: 'blob',
+      });
+      
+      // Determine proper filename (remove timestamp prefix if present)
+      const originalName = name.includes('_') ? name.substring(name.indexOf('_') + 1) : name;
+      
+      // Create a proper File object from the blob
+      const file = new File([fileRes.data], originalName, { 
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
+      });
+      
+      // Create FormData to send to Java backend
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      const res = await axios.post('http://localhost:8080/graph/process', formData, {
+        timeout: 5 * 60 * 1000, // 5 minutes
+      });
+      
+      setCausalityGraph(res.data);
+      setSuccessMsg('Causality analysis complete.');
+    } catch (err) {
+      console.error('Causality analysis error:', err);
+      const errorMsg = err?.response?.data?.error || err?.response?.data?.message || err.message || 'Causality analysis failed. Is the Java backend running on port 8080?';
+      setCausalityError(errorMsg);
+    } finally {
+      setCausalityLoading(false);
+    }
+  }
+
+  // ReactFlow-based Causality Graph Component
+  function CausalityGraphView({ graph }) {
+    const [selectedNode, setSelectedNode] = useState(null);
+    
+    if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) return null;
+    
+    const graphNodes = graph.nodes;
+    const graphEdges = Array.isArray(graph.edges) ? graph.edges : [];
+
+    // Radial layout for initial positions
+    const radius = 300;
+    const centerX = 300;
+    const centerY = 250;
+
+    // Convert to React Flow nodes - only set initial positions
+    const initialNodes = graphNodes.map((n, idx) => {
+      const angle = (idx / graphNodes.length) * Math.PI * 2 - Math.PI / 2;
+      return {
+        id: n.feature,
+        data: { 
+          label: (
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontWeight: 'bold', fontSize: '14px' }}>{idx + 1}</div>
+              <div style={{ fontSize: '9px', opacity: 0.8, maxWidth: '60px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {n.label || n.feature}
+              </div>
+            </div>
+          )
+        },
+        position: {
+          x: centerX + radius * Math.cos(angle),
+          y: centerY + radius * Math.sin(angle),
+        },
+        draggable: true,
+      };
+    });
+
+    // Convert to React Flow edges (directed with weights)
+    const initialEdges = graphEdges.map((e, idx) => {
+      const weight = typeof e.weight === 'number' ? e.weight : 0.2;
+      return {
+        id: `e${idx}-${e.source}-${e.destination}`,
+        source: e.source,
+        target: e.destination,
+        label: weight.toFixed(2),
+        labelStyle: { fontSize: 11, fontWeight: 'bold', fill: '#374151' },
+        labelBgStyle: { fill: 'white', fillOpacity: 0.9 },
+        labelBgPadding: [6, 4],
+        labelBgBorderRadius: 4,
+        style: { 
+          stroke: '#6b7280', 
+          strokeWidth: Math.max(1.5, weight * 4),
+        },
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          color: '#6b7280',
+          width: 20,
+          height: 20,
+        },
+        type: 'default',
+      };
+    });
+
+    return (
+      <div className="card" style={{ marginTop: '16px', borderLeft: '4px solid #10b981' }}>
+        <h4 style={{ marginTop: 0 }}>Causality Graph</h4>
+        <p style={{ margin: '0 0 12px 0', fontSize: '13px', color: '#6b7280' }}>
+          Click a node to highlight its connections. <span style={{ color: '#10b981' }}>●</span> Outgoing edges (causes) | <span style={{ color: '#f59e0b' }}>●</span> Incoming edges (effects). Drag nodes to rearrange.
+        </p>
+        <div style={{ width: '100%', height: 500, border: '1px solid #e5e7eb', borderRadius: 8, background: '#fafafa' }}>
+          <ReactFlowProvider>
+            <CausalityReactFlowGraph 
+              initialNodes={initialNodes} 
+              initialEdges={initialEdges} 
+              graphEdges={graphEdges}
+              selectedNode={selectedNode}
+              onNodeSelect={setSelectedNode}
+            />
+          </ReactFlowProvider>
+        </div>
+        {selectedNode && (
+          <div style={{ marginTop: '8px', textAlign: 'right' }}>
+            <button 
+              onClick={() => setSelectedNode(null)} 
+              style={{ padding: '4px 12px', fontSize: '12px', cursor: 'pointer', background: '#e5e7eb', border: 'none', borderRadius: '4px' }}
+            >
+              Clear Selection
+            </button>
+          </div>
+        )}
+        <div className="graph-legend" style={{ marginTop: '12px' }}>
+          {graphNodes.map((n, idx) => (
+            <div 
+              key={`legend-${idx}`} 
+              className="graph-legend-row"
+              onClick={() => setSelectedNode(selectedNode === n.feature ? null : n.feature)}
+              style={{ cursor: 'pointer', background: selectedNode === n.feature ? '#ecfdf5' : 'transparent', borderRadius: '4px' }}
+            >
+              <span className="legend-badge" style={{ background: selectedNode === n.feature ? '#10b981' : '#3b82f6', color: 'white' }}>{idx + 1}</span>
+              <div className="legend-labels">
+                <div className="legend-title">{n.label || n.feature}</div>
+                <div className="legend-sub">{n.feature}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  function CausalityReactFlowGraph({ initialNodes, initialEdges, graphEdges, selectedNode, onNodeSelect }) {
+    const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
+    const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+    
+    // Update node styles and edge styles when selection changes, but preserve positions
+    React.useEffect(() => {
+      // Update node styles based on selection
+      setNodes((nds) =>
+        nds.map((node) => {
+          const isSelected = selectedNode === node.id;
+          return {
+            ...node,
+            style: {
+              background: isSelected ? '#10b981' : '#3b82f6',
+              color: 'white',
+              border: isSelected ? '3px solid #059669' : '2px solid #1d4ed8',
+              borderRadius: '50%',
+              width: 70,
+              height: 70,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '10px',
+              padding: '5px',
+              cursor: 'pointer',
+              transition: 'background 0.2s ease, border 0.2s ease',
+            },
+          };
+        })
+      );
+      
+      // Update edge styles based on selection
+      setEdges((eds) =>
+        eds.map((edge) => {
+          const originalEdge = graphEdges.find(
+            (e) => edge.id.includes(e.source) && edge.id.includes(e.destination)
+          );
+          const weight = originalEdge?.weight ?? 0.2;
+          
+          const isOutgoing = selectedNode && edge.source === selectedNode;
+          const isIncoming = selectedNode && edge.target === selectedNode;
+          const isConnected = isOutgoing || isIncoming;
+          
+          let strokeColor = '#d1d5db';
+          let strokeWidth = Math.max(1.5, weight * 4);
+          let opacity = 0.3;
+          
+          if (!selectedNode) {
+            strokeColor = '#6b7280';
+            opacity = 1;
+          } else if (isOutgoing) {
+            strokeColor = '#10b981';
+            strokeWidth = Math.max(2.5, weight * 5);
+            opacity = 1;
+          } else if (isIncoming) {
+            strokeColor = '#f59e0b';
+            strokeWidth = Math.max(2.5, weight * 5);
+            opacity = 1;
+          }
+          
+          return {
+            ...edge,
+            labelStyle: { 
+              fontSize: 11, 
+              fontWeight: 'bold', 
+              fill: isConnected ? '#111827' : '#9ca3af',
+              opacity: isConnected || !selectedNode ? 1 : 0.4,
+            },
+            labelBgStyle: { 
+              fill: isConnected ? (isOutgoing ? '#d1fae5' : '#fef3c7') : 'white', 
+              fillOpacity: 0.95 
+            },
+            style: { 
+              stroke: strokeColor, 
+              strokeWidth: strokeWidth,
+              opacity: opacity,
+              transition: 'stroke 0.2s ease, opacity 0.2s ease',
+            },
+            markerEnd: {
+              type: MarkerType.ArrowClosed,
+              color: strokeColor,
+              width: 20,
+              height: 20,
+            },
+          };
+        })
+      );
+    }, [selectedNode, graphEdges, setNodes, setEdges]);
+    
+    const onNodeClick = (event, node) => {
+      onNodeSelect(selectedNode === node.id ? null : node.id);
+    };
+    
+    const onPaneClick = () => {
+      onNodeSelect(null);
+    };
+
+    return (
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        onNodeClick={onNodeClick}
+        onPaneClick={onPaneClick}
+        fitView
+        attributionPosition="bottom-left"
+        defaultEdgeOptions={{
+          type: 'default',
+        }}
+      >
+        <Background color="#e5e7eb" gap={16} />
+        <Controls />
+      </ReactFlow>
+    );
   }
 
   function GraphView({ graph }) {
@@ -913,11 +1200,32 @@ const handleMLPredict = async () => {
     </div>
 
     {graphError && <div className="error-msg">{graphError}</div>}
+    {causalityError && <div className="error-msg">{causalityError}</div>}
 
     {graphData && (
       <div style={{ marginTop: 16 }}>
         <GraphView graph={graphData} />
       </div>
+    )}
+
+    {/* Causality Graph Section */}
+    <div className="card" style={{ marginTop: 16, borderLeft: '4px solid #10b981' }}>
+      <h3>Causality Analysis</h3>
+      <p className="analysis-caption">
+        Run the AI model to discover causal relationships between cardiac features.
+      </p>
+      <button
+        className="primary-button full-width"
+        onClick={runCausalityAnalysis}
+        disabled={causalityLoading || selectedFile < 0}
+        style={{ background: '#10b981', borderColor: '#059669' }}
+      >
+        {causalityLoading ? 'Analyzing causality...' : 'Run Causality Graph Analysis'}
+      </button>
+    </div>
+
+    {causalityGraph && (
+      <CausalityGraphView graph={causalityGraph} />
     )}
 
     {uploading && (
